@@ -2,7 +2,7 @@
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/1yyy21/private-cloud-worker-template)
 
-这是给每位玩家单独部署的后台消息云端。部署后，Worker、数据库与推送配置都归玩家自己的 Cloudflare 账户所有；模板仓库和站点维护者不会得到访问权限。
+这是给每位玩家单独部署的后台消息云端。一个云端可以绑定多台设备；每台设备使用独立凭据、设置和推送订阅，消息不会因为新增设备而覆盖其他设备。部署后，Worker、数据库与推送配置都归玩家自己的 Cloudflare 账户所有；模板仓库和站点维护者不会得到访问权限。
 
 此模板必须与客户端的 `privateCloudParityV2` / `candidateContractV2` 合约配套。旧版 V1 Worker 不会被客户端自动接受，也不会覆盖玩家已有数据。
 
