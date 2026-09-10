@@ -155,6 +155,13 @@ async function processState(state, vapid, now) {
   return {...nextState,characters:chars,messages:messages.slice(0,80),jobReceipts:(nextState.jobReceipts||[]).slice(0,120),updatedAt:now};
 }
 async function run(db) { await ensureSchema(db); const current = await meta(db), now = Date.now(); if (now - Number(current.lastRunAt || 0) < 45_000) return {ok:true,skipped:true}; await writeRow(db, META, 'internal', {...current,lastRunAt:now}); const {results} = await db.prepare('SELECT * FROM private_cloud_state WHERE device_id != ? LIMIT 100').bind(META).all(); for (const row of results || []) await writeRow(db, row.device_id, row.secret_hash, await processState(parse(row.state_json), current.vapid, now)); return {ok:true,processed:(results || []).length}; }
+function buildTestMessage(state, now) {
+  if (!state.subscription?.endpoint) throw new Error('后台消息尚未连接，请先开启后台消息');
+  const selected = Object.entries(state.characters || {}).find(([, entry]) => entry?.snapshot);
+  if (!selected) throw new Error('请先同步至少一个角色');
+  const [charId, entry] = selected, snapshot = entry.snapshot || {};
+  return {id:`pc_test_${crypto.randomUUID()}`,charId:String(charId),title:clean(snapshot.charName||'角色',80),text:'这是一条云端测试消息：如果你能看到它，说明私有云端已经可以联系当前设备。',route:`/?route=conversation&charId=${encodeURIComponent(String(charId))}`,createdAt:now,acknowledged:false,intentType:'cloud_test',reasonKey:'cloud-test:manual',jobId:'',appointmentId:'',personaId:clean(snapshot.personaId,120),silent:false};
+}
 
 export default {
   async scheduled(_, env, ctx) { ctx.waitUntil(run(env.PRIVATE_CLOUD_DB)); },
@@ -167,6 +174,7 @@ export default {
       if (currentAction === 'run') return json({ok:false,error:'该操作仅由定时任务执行'},403);
       if (currentAction === 'enable') { const device=validDevice(data.device),existing=await readRow(db,device.id),secretHash=await hash(device.secret); if(existing?.secret_hash&&existing.secret_hash!==secretHash)throw new Error('设备凭据不匹配'); if(!existing&&await claimedByAnotherDevice(db,device.id))throw new Error('这个云端已被另一台设备绑定'); const old=parse(existing?.state_json); await writeRow(db,device.id,secretHash,{...old,enabled:true,apiProfile:validApi(data.apiProfile),settings:data.settings||{},subscription:data.pushSubscription||null,characters:old.characters||{},messages:old.messages||[],jobReceipts:old.jobReceipts||[]}); return json({ok:true,enabled:true,version:2}); }
       const current=await own(db,data.device);
+      if (currentAction === 'test') { const now=Date.now(), message=buildTestMessage(current.state,now), nextState={...current.state,messages:[message,...(current.state.messages||[])].slice(0,80),updatedAt:now}; await writeRow(db,current.device.id,await hash(current.device.secret),nextState); let pushSent=false; try { pushSent=await sendPush(current.state.subscription,message,current.state.settings||{},(await meta(db)).vapid); } catch (_) {} return json({ok:true,test:true,pushSent,messageId:message.id}); }
       if (currentAction === 'settings') { await writeRow(db,current.device.id,await hash(current.device.secret),{...current.state,settings:data.settings||{},enabled:data.enabled===true,apiProfile:data.apiProfile?validApi(data.apiProfile):current.state.apiProfile}); return json({ok:true}); }
       if (currentAction === 'snapshot') { const id=clean(data.charId,120); if(!id)throw new Error('角色无效'); const chars={...(current.state.characters||{})}, old={...(chars[id]||{})}, terminal=old.terminalJobs&&typeof old.terminalJobs==='object'?old.terminalJobs:{}; const jobs=(Array.isArray(data.jobs)?data.jobs:[]).filter(j=>j?.id&&!terminal[String(j.id)]).slice(0,48); chars[id]={...old,enabled:data.enabled!==false,snapshot:data.snapshot||{},jobs,nextCheckAt:data.expedite===true?Date.now()+5_000:Number(data.nextCheckAt)||Date.now()+MINUTE,lastSentAt:Number(old.lastSentAt||0),terminalJobs:terminal}; await writeRow(db,current.device.id,await hash(current.device.secret),{...current.state,characters:chars}); return json({ok:true,candidateContractV2:true}); }
       if (currentAction === 'reconcile') return json({ok:true,messages:(current.state.messages||[]).filter(item=>!item.acknowledged).map(item=>({message_id:item.id,char_id:item.charId,text:item.text,created_at:item.createdAt,intent_type:item.intentType||'absence_checkin',reason_key:item.reasonKey||'',job_id:item.jobId||'',appointment_id:item.appointmentId||'',persona_id:item.personaId||''})),jobReceipts:Array.isArray(current.state.jobReceipts)?current.state.jobReceipts:[]});
@@ -176,3 +184,5 @@ export default {
     } catch (error) { return json({ok:false,error:clean(error?.message||error,180)||'私有云端暂时不可用'},400); }
   }
 };
+
+
